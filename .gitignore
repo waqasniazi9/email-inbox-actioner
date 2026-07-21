@@ -1,0 +1,9 @@
+.env
+credentials.json
+credentialsdrive.json
+token.json
+triage_logs.db
+downloads/
+chroma_db/
+__pycache__/
+*.pyc

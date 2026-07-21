@@ -1,0 +1,8 @@
+project 3/
+├─ app.py          # code from previous answer
+├─ requirements.txt
+├─ .env
+├─ credentials.json
+├─ token.json      # will be created automatically
+├─ downloads/      # will be created by code
+└─ triage_logs.db  # will be created by code
