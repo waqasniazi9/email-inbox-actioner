@@ -18,15 +18,26 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
-load_dotenv()
+load_dotenv(override=True)
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+
+def _get_secret(key: str, default: str = "") -> str:
+    """Read from st.secrets (Streamlit Cloud) first, then fall back to env var."""
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError):
+        return os.getenv(key, default)
+
+
+OPENAI_API_KEY = _get_secret("OPENAI_API_KEY")
+OPENAI_MODEL = _get_secret("OPENAI_MODEL") or "gpt-4o-mini"
+GOOGLE_DRIVE_FOLDER_ID = _get_secret("GOOGLE_DRIVE_FOLDER_ID", "")
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/drive.file",
 ]
 
 DB_FILE = "triage_logs.db"
@@ -92,22 +103,55 @@ def get_openai_client():
     return OpenAI(api_key=OPENAI_API_KEY)
 
 
+def _load_credentials_from_secrets() -> Optional[Credentials]:
+    """Load Google OAuth token from st.secrets (Streamlit Cloud)."""
+    try:
+        token_data = st.secrets["google_token"]
+        return Credentials(
+            token=token_data.get("token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
+            client_id=token_data.get("client_id"),
+            client_secret=token_data.get("client_secret"),
+            scopes=SCOPES,
+        )
+    except (KeyError, FileNotFoundError):
+        return None
+
+
 def gmail_auth():
     creds = None
-    if os.path.exists(TOKEN_FILE):
+
+    # Try loading token from Streamlit Cloud secrets first
+    creds = _load_credentials_from_secrets()
+
+    # Fallback: load from local token.json (local dev)
+    if creds is None and os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            # Persist refreshed token to local file if possible
+            try:
+                with open(TOKEN_FILE, "w", encoding="utf-8") as token:
+                    token.write(creds.to_json())
+            except Exception:
+                pass
         else:
-            if not os.path.exists(CREDENTIALS_FILE):
-                raise FileNotFoundError("credentials.json not found")
+            # On Streamlit Cloud: no local browser — show instructions
+            is_cloud = not os.path.exists(CREDENTIALS_FILE)
+            if is_cloud:
+                raise FileNotFoundError(
+                    "Google credentials not found in st.secrets. "
+                    "Please add [google_token] to your Streamlit Cloud secrets. "
+                    "See the README for setup instructions."
+                )
             flow = InstalledAppFlow.from_client_secrets_file(
                 CREDENTIALS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, "w", encoding="utf-8") as token:
-            token.write(creds.to_json())
+            with open(TOKEN_FILE, "w", encoding="utf-8") as token:
+                token.write(creds.to_json())
 
     gmail_service = build("gmail", "v1", credentials=creds)
     drive_service = build("drive", "v3", credentials=creds)
